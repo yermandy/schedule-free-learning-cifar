@@ -4,6 +4,7 @@ import argparse
 import os
 import random
 from collections import defaultdict
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -18,6 +19,7 @@ from adamw_schedulefree import AdamWScheduleFree
 
 try:
     import rich
+    from rich import print
     from tqdm.rich import tqdm
 
 except ImportError:
@@ -29,6 +31,18 @@ try:
 
 except ImportError:
     wandb = None
+
+
+@dataclass
+class Config:
+    lr: float
+    optim: str
+    epochs: int
+    wandb: bool
+    cuda: int
+    name: str
+    scheduler: str
+    model: str
 
 
 def train(epoch, model, loader, criterion, optimizer):
@@ -110,29 +124,29 @@ def build_model(model_name):
     return model
 
 
-def build_optimizer(model, args):
+def build_optimizer(model, config: Config):
     print("==> Building optimizer")
     try:
-        optim = eval(f"torch.optim.{args.optim}")
-        optimizer = optim(model.parameters(), lr=args.lr)
+        optim = eval(f"torch.optim.{config.optim}")
+        optimizer = optim(model.parameters(), lr=config.lr)
     except AttributeError:
-        if args.optim == "AdamWScheduleFree":
-            optimizer = AdamWScheduleFree(model.parameters(), lr=args.lr)
+        if config.optim == "AdamWScheduleFree":
+            optimizer = AdamWScheduleFree(model.parameters(), lr=config.lr)
         else:
-            raise ValueError(f"Unknown optimizer: {args.optim}, see torch.optim for available optimizers")
+            raise ValueError(f"Unknown optimizer: {config.optim}, see torch.optim for available optimizers")
 
     return optimizer
 
 
-def build_scheduler(optimizer, args):
+def build_scheduler(optimizer, config: Config):
     print("==> Building scheduler")
-    if args.scheduler is not None:
+    if config.scheduler is not None:
         try:
-            scheduler = eval(f"torch.optim.lr_scheduler.{args.scheduler}")
+            scheduler = eval(f"torch.optim.lr_scheduler.{config.scheduler}")
             scheduler = scheduler(optimizer, T_max=200)
         except AttributeError:
             raise ValueError(
-                f"Unknown scheduler: {args.scheduler}, see torch.optim.lr_scheduler for available schedulers"
+                f"Unknown scheduler: {config.scheduler}, see torch.optim.lr_scheduler for available schedulers"
             )
     else:
         scheduler = None
@@ -156,7 +170,7 @@ def seed_worker(worker_id):
     random.seed(worker_seed)
 
 
-def main():
+def main(**kwargs):
     parser = argparse.ArgumentParser(description="PyTorch CIFAR10 Training")
     parser.add_argument("--lr", default=0.0003, type=float, help="learning rate")
     parser.add_argument("--optim", default="AdamW", choices=["AdamW", "AdamWScheduleFree"], help="optimizer")
@@ -166,11 +180,13 @@ def main():
     parser.add_argument("--name", default=None, type=str, help="run name")
     parser.add_argument("--scheduler", default=None, type=str, choices=["CosineAnnealingLR"], help="scheduler")
     parser.add_argument("--model", default="ResNet18", type=str, help="model from models ")
-    args = parser.parse_args()
+    config = parser.parse_args()
+
+    config = Config(**{**vars(config), **kwargs})
 
     seed_everything(42)
 
-    device = f"cuda:{args.cuda}" if torch.cuda.is_available() else "cpu"
+    device = f"cuda:{config.cuda}" if torch.cuda.is_available() else "cpu"
 
     # Data
     print("==> Preparing data..")
@@ -203,22 +219,22 @@ def main():
 
     criterion = nn.CrossEntropyLoss()
 
-    model = build_model(args.model).to(device)
-    optimizer = build_optimizer(model, args)
-    scheduler = build_scheduler(optimizer, args)
+    model = build_model(config.model).to(device)
+    optimizer = build_optimizer(model, config)
+    scheduler = build_scheduler(optimizer, config)
 
     results = defaultdict(list)
 
     if wandb:
         wandb.init(
             project="adamw-schedule-free",
-            config=vars(args),
-            mode="online" if args.wandb else "disabled",
-            name=args.name,
+            config=vars(config),
+            mode="online" if config.wandb else "disabled",
+            name=config.name,
         )
         wandb.watch(model)
 
-    for epoch in range(args.epochs):
+    for epoch in range(config.epochs):
         train_results = train(epoch, model, train_loader, criterion, optimizer)
         val_results = val(epoch, model, val_loader, criterion, optimizer)
 
